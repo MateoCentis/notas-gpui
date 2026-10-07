@@ -69,7 +69,10 @@ pub fn keymap_path() -> PathBuf {
 /// Crea una `KeyBinding` a partir del nombre de una acción.
 fn binding(keys: &str, action: &str) -> Option<KeyBinding> {
     // `KeyBinding::new` entra en pánico con teclas inválidas: se validan antes.
-    if keys.split_whitespace().any(|k| Keystroke::parse(k).is_err()) {
+    if keys
+        .split_whitespace()
+        .any(|k| Keystroke::parse(k).is_err())
+    {
         return None;
     }
     let ctx = Some(CONTEXT);
@@ -130,7 +133,11 @@ pub fn load(cx: &mut App) -> Vec<String> {
 
     // Fijo: dentro del panel, una lista desplegable abierta se cierra antes con Esc
     // porque su contexto es más interno.
-    let mut bindings = vec![KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT))];
+    let mut bindings = vec![KeyBinding::new(
+        "escape",
+        CloseSettings,
+        Some(SETTINGS_CONTEXT),
+    )];
     for (keys, action) in &map {
         let Some(action) = action else { continue };
         match binding(keys, action) {

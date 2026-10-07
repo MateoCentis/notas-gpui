@@ -59,7 +59,11 @@ fn parse(src: &str) -> Result<Entry, String> {
         (Some(t), None) | (None, Some(t)) => (t.clone(), t),
         (None, None) => return Err("no tiene ningún tema".into()),
     };
-    Ok(Entry { name: set.name, light, dark })
+    Ok(Entry {
+        name: set.name,
+        light,
+        dark,
+    })
 }
 
 /// Archivos de tema del usuario, en orden alfabético.
@@ -69,7 +73,10 @@ fn user_theme_files() -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("json"))
+        })
         .collect();
     files.sort();
     // Formato anterior: un único `theme.json` en la carpeta de datos.
@@ -118,7 +125,11 @@ pub fn load(cx: &mut App) -> Vec<String> {
 
 /// Nombres de los temas disponibles.
 pub fn names(cx: &App) -> Vec<SharedString> {
-    cx.global::<Catalog>().themes.iter().map(|t| t.name.clone()).collect()
+    cx.global::<Catalog>()
+        .themes
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
 }
 
 /// Fuentes instaladas, ordenadas y sin repetir.
@@ -142,17 +153,11 @@ pub fn installed_font(family: &str, cx: &App) -> Option<SharedString> {
 pub fn apply(settings: &Settings, window: Option<&mut Window>, cx: &mut App) -> Vec<String> {
     let mut errors = Vec::new();
     let catalog = cx.global::<Catalog>();
-    let entry = match catalog.themes.iter().find(|t| t.name == settings.theme.as_str()) {
-        Some(entry) => entry,
-        None => {
-            errors.push(format!("No existe el tema «{}»", settings.theme));
-            catalog
-                .themes
-                .iter()
-                .find(|t| t.name == DEFAULT)
-                .expect("falta el tema por defecto")
-        }
-    };
+    let find = |name: &str| catalog.themes.iter().find(|t| t.name == name);
+    let entry = find(&settings.theme).unwrap_or_else(|| {
+        errors.push(format!("No existe el tema «{}»", settings.theme));
+        find(DEFAULT).expect("falta el tema por defecto")
+    });
     let (light, dark) = (entry.light.clone(), entry.dark.clone());
 
     let ui_font = match settings.ui_font_family.as_deref() {
@@ -166,7 +171,11 @@ pub fn apply(settings: &Settings, window: Option<&mut Window>, cx: &mut App) -> 
     let theme = Theme::global_mut(cx);
     theme.light_theme = light;
     theme.dark_theme = dark;
-    let mode = if settings.dark { ThemeMode::Dark } else { ThemeMode::Light };
+    let mode = if settings.dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
     Theme::change(mode, window, cx);
     // Después del cambio de tema, por si el archivo del tema trae su propia fuente.
     Theme::update(cx, |theme| theme.font_family = ui_font);

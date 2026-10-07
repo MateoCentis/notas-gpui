@@ -4,9 +4,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, px,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::IndexPath;
@@ -63,7 +63,10 @@ fn select<T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
 ) -> Entity<SelectState<Choices>> {
-    let ix = items.iter().position(|i| i.as_ref() == selected).unwrap_or(0);
+    let ix = items
+        .iter()
+        .position(|i| i.as_ref() == selected)
+        .unwrap_or(0);
     cx.new(|cx| {
         SelectState::new(Choices::new(items), Some(IndexPath::new(ix)), window, cx)
             .searchable(searchable)
@@ -104,17 +107,25 @@ impl SettingsPanel {
         let mut subscribe = |state: &Entity<SelectState<Choices>>,
                              to_change: fn(SharedString) -> Change| {
             let on_change = on_change.clone();
-            cx.subscribe_in(state, window, move |this, _, ev: &SelectEvent<Choices>, window, cx| {
-                let SelectEvent::Confirm(Some(value)) = ev else { return };
-                on_change(this, to_change(value.clone()), window, cx);
-            })
+            cx.subscribe_in(
+                state,
+                window,
+                move |this, _, ev: &SelectEvent<Choices>, window, cx| {
+                    let SelectEvent::Confirm(Some(value)) = ev else {
+                        return;
+                    };
+                    on_change(this, to_change(value.clone()), window, cx);
+                },
+            )
         };
-        let _subscriptions = vec![
+        let subscriptions = vec![
             subscribe(&theme, Change::Theme),
             subscribe(&editor_font, |v| {
                 Change::EditorFont((v.as_ref() != EDITOR_DEFAULT).then_some(v))
             }),
-            subscribe(&ui_font, |v| Change::UiFont((v.as_ref() != UI_DEFAULT).then_some(v))),
+            subscribe(&ui_font, |v| {
+                Change::UiFont((v.as_ref() != UI_DEFAULT).then_some(v))
+            }),
         ];
 
         let focus_handle = cx.focus_handle();
@@ -124,15 +135,15 @@ impl SettingsPanel {
             theme,
             editor_font,
             ui_font,
-            _subscriptions,
+            _subscriptions: subscriptions,
         }
     }
 
-    pub fn render(&self, settings: &Settings, on_change: OnChange, cx: &App) -> impl IntoElement {
+    pub fn render(&self, settings: &Settings, on_change: &OnChange, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
-        let row = |label: &'static str, hint: Option<&'static str>, control: gpui::AnyElement| {
+        let row = |label: &'static str, hint: Option<&'static str>, control: AnyElement| {
             h_flex()
                 .gap_4()
                 .py_2()
@@ -274,7 +285,11 @@ impl SettingsPanel {
                     .child(row(
                         "Abrir en modo vista",
                         Some("Al iniciar la app"),
-                        switch("start-preview", settings.start_in_preview, Change::StartInPreview),
+                        switch(
+                            "start-preview",
+                            settings.start_in_preview,
+                            Change::StartInPreview,
+                        ),
                     )),
             )
             .child(

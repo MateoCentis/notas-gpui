@@ -16,9 +16,7 @@ pub fn data_dir() -> PathBuf {
 
 /// Carpeta de notas por defecto: `Documentos\Notas`.
 fn default_notes_dir() -> PathBuf {
-    dirs::document_dir()
-        .map(|d| d.join("Notas"))
-        .unwrap_or_else(|| data_dir().join("notas"))
+    dirs::document_dir().map_or_else(|| data_dir().join("notas"), |d| d.join("Notas"))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

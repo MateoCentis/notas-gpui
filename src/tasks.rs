@@ -44,7 +44,8 @@ fn parse_task_line(line: &str) -> Option<(usize, bool, usize, &str)> {
             return None;
         }
         let rest = &trimmed[digits..];
-        rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))?
+        rest.strip_prefix(". ")
+            .or_else(|| rest.strip_prefix(") "))?
     };
 
     let after_spaces = after_bullet.trim_start_matches(' ');
@@ -66,7 +67,7 @@ fn parse_task_line(line: &str) -> Option<(usize, bool, usize, &str)> {
     Some((indent, checked, mark_offset, rest.trim()))
 }
 
-/// Comienzo de un bloque de código cercado (``` o ~~~), si lo es.
+/// Comienzo de un bloque de código cercado (`` ``` `` o `~~~`), si lo es.
 fn fence_marker(line: &str) -> Option<&'static str> {
     let t = line.trim_start();
     if t.starts_with("```") {
@@ -97,10 +98,10 @@ pub fn split_blocks(text: &str) -> Vec<Block> {
     let mut fence: Option<&'static str> = None;
 
     let flush = |pending: &mut String, blocks: &mut Vec<Block>| {
-        if !pending.trim().is_empty() {
-            blocks.push(Block::Markdown(std::mem::take(pending)));
-        } else {
+        if pending.trim().is_empty() {
             pending.clear();
+        } else {
+            blocks.push(Block::Markdown(std::mem::take(pending)));
         }
     };
 
@@ -141,7 +142,11 @@ pub fn line_range_at(text: &str, offset: usize) -> Range<usize> {
     let offset = offset.min(text.len());
     let start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
     let end = text[offset..].find('\n').map_or(text.len(), |i| offset + i);
-    let end = if text[start..end].ends_with('\r') { end - 1 } else { end };
+    let end = if text[start..end].ends_with('\r') {
+        end - 1
+    } else {
+        end
+    };
     start..end
 }
 
@@ -205,7 +210,7 @@ pub fn progress(text: &str) -> (usize, usize) {
             Block::Markdown(_) => None,
         })
         .fold((0, 0), |(done, total), checked| {
-            (done + checked as usize, total + 1)
+            (done + usize::from(checked), total + 1)
         })
 }
 
@@ -216,7 +221,10 @@ mod tests {
     #[test]
     fn parsea_variantes_de_tarea() {
         assert_eq!(parse_task_line("- [ ] a"), Some((0, false, 3, "a")));
-        assert_eq!(parse_task_line("  * [x] hecho"), Some((2, true, 5, "hecho")));
+        assert_eq!(
+            parse_task_line("  * [x] hecho"),
+            Some((2, true, 5, "hecho"))
+        );
         assert_eq!(parse_task_line("\t+ [X] b"), Some((4, true, 4, "b")));
         assert_eq!(parse_task_line("1. [ ] uno"), Some((0, false, 4, "uno")));
         assert_eq!(parse_task_line("- [ ]"), Some((0, false, 3, "")));
@@ -237,7 +245,9 @@ mod tests {
         assert!(!t.checked);
         let Block::Task(t) = &blocks[2] else { panic!() };
         assert_eq!(&doc[t.mark.clone()], "x");
-        let Block::Markdown(code) = &blocks[3] else { panic!() };
+        let Block::Markdown(code) = &blocks[3] else {
+            panic!()
+        };
         assert!(code.contains("- [ ] no es tarea"));
     }
 

@@ -26,6 +26,17 @@ pub enum Target {
     File(PathBuf),
 }
 
+/// Dónde está la nota; también es el orden en la lista, a igual coincidencia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Place {
+    /// La nota activa.
+    Current,
+    /// Abierta, pero no activa.
+    Open,
+    /// Solo en disco.
+    Disk,
+}
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub target: Target,
@@ -33,8 +44,7 @@ pub struct Entry {
     title_norm: String,
     body_norm: String,
     modified: Option<SystemTime>,
-    /// 0 = la nota actual, 1 = abierta, 2 = en disco.
-    rank: u8,
+    place: Place,
 }
 
 impl Entry {
@@ -45,7 +55,7 @@ impl Entry {
             body_norm: notes::normalize(text),
             title,
             modified: None,
-            rank: if current { 0 } else { 1 },
+            place: if current { Place::Current } else { Place::Open },
         }
     }
 
@@ -56,15 +66,15 @@ impl Entry {
             title_norm: note.title_norm,
             body_norm: note.body_norm,
             modified: note.modified,
-            rank: 2,
+            place: Place::Disk,
         }
     }
 
     fn tag(&self) -> String {
-        match self.rank {
-            0 => "actual".into(),
-            1 => "abierta".into(),
-            _ => self.modified.map(notes::relative_time).unwrap_or_default(),
+        match self.place {
+            Place::Current => "actual".into(),
+            Place::Open => "abierta".into(),
+            Place::Disk => self.modified.map(notes::relative_time).unwrap_or_default(),
         }
     }
 }
@@ -82,7 +92,7 @@ fn rank(entries: &[Entry], query: &str) -> Vec<Option<usize>> {
     scored.sort_by(|(sa, a), (sb, b)| {
         let (ea, eb) = (&entries[*a], &entries[*b]);
         sa.cmp(sb)
-            .then(ea.rank.cmp(&eb.rank))
+            .then(ea.place.cmp(&eb.place))
             .then(eb.modified.cmp(&ea.modified))
     });
     let mut results: Vec<Option<usize>> = scored.into_iter().map(|(_, i)| Some(i)).collect();
@@ -175,7 +185,13 @@ impl Palette {
                             .text_color(if create { accent } else { muted }),
                     )
                     .child(div().flex_1().min_w_0().truncate().child(title.clone()))
-                    .child(div().flex_shrink_0().text_xs().text_color(muted).child(tag.clone()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(tag.clone()),
+                    )
             })
         });
 
@@ -219,13 +235,11 @@ mod tests {
     use std::time::Duration;
 
     fn file(title: &str, body: &str, age_secs: u64) -> Entry {
-        let mut e = Entry::file(notes::NoteFile::from_text(
+        Entry::file(notes::NoteFile::from_text(
             PathBuf::from(format!("{title}.md")),
             &format!("# {title}\n{body}"),
             Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 - age_secs)),
-        ));
-        e.rank = 2;
-        e
+        ))
     }
 
     #[test]
@@ -250,4 +264,3 @@ mod tests {
         assert_eq!(rank(&entries, "xyz"), vec![None]);
     }
 }
-

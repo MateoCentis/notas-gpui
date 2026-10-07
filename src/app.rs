@@ -9,10 +9,11 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, EntityId, ExternalPaths, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, PathPromptOptions,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
-    WindowBounds, div, img, prelude::FluentBuilder as _, px, relative,
+    App, AppContext as _, ClickEvent, Context, Div, Entity, EntityId, ExternalPaths, FocusHandle,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, WindowBounds, div,
+    img, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Selectable as _;
@@ -27,7 +28,11 @@ use gpui_kit::component::{
 };
 
 use crate::{
-    keymap::{self, *},
+    keymap::{
+        self, CloseNote, CloseSettings, NewFile, OpenFile, OpenKeymap, OpenSettings, Quit, Save,
+        SaveAs, SearchNotes, ToggleMaximize, TogglePin, TogglePreview, ToggleTask, ToggleTheme,
+        ZoomIn, ZoomOut, ZoomReset,
+    },
     notes,
     palette::{Choice, Entry, Palette, Target},
     platform,
@@ -54,7 +59,8 @@ struct Doc {
     blocks: Option<Rc<Vec<Block>>>,
     progress: (usize, usize),
     title: String,
-    _autosave: Option<Task<()>>,
+    /// Autoguardado pendiente; reemplazarlo o soltarlo lo cancela.
+    autosave_task: Option<Task<()>>,
     _subscription: Subscription,
 }
 
@@ -74,18 +80,18 @@ pub struct Notas {
     last_title: String,
     /// Un cierre falló al guardar; el siguiente intento cierra igual.
     force_close: bool,
-    _status_timer: Option<Task<()>>,
+    /// Borra `status` al vencer; reemplazarlo reinicia la cuenta.
+    status_timer: Option<Task<()>>,
 }
 
 impl Notas {
     pub fn new(
         initial: Option<PathBuf>,
         settings: Settings,
-        startup_errors: Vec<String>,
+        mut startup_errors: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut startup_errors = startup_errors;
         let mut this = Self {
             docs: Vec::new(),
             next_id: 0,
@@ -98,7 +104,7 @@ impl Notas {
             status: None,
             last_title: String::new(),
             force_close: false,
-            _status_timer: None,
+            status_timer: None,
         };
 
         // Restaurar la sesión anterior; si no hay, la nota más reciente o una nueva.
@@ -151,7 +157,9 @@ impl Notas {
     }
 
     fn doc_ix_by_editor(&self, editor: EntityId) -> Option<usize> {
-        self.docs.iter().position(|d| d.editor.entity_id() == editor)
+        self.docs
+            .iter()
+            .position(|d| d.editor.entity_id() == editor)
     }
 
     /// Crea una nota abierta con el texto dado y la deja activa.
@@ -171,14 +179,17 @@ impl Notas {
                 .placeholder("Escribe algo…  (Ctrl+L crea una tarea, Ctrl+K busca notas)")
         });
         editor.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
-        let subscription =
-            cx.subscribe_in(&editor, window, |this, editor, event: &InputEvent, window, cx| {
+        let subscription = cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event
                     && let Some(ix) = this.doc_ix_by_editor(editor.entity_id())
                 {
                     this.on_text_changed(ix, window, cx);
                 }
-            });
+            },
+        );
 
         let id = self.next_id;
         self.next_id += 1;
@@ -191,7 +202,7 @@ impl Notas {
             crlf,
             dirty: false,
             blocks: None,
-            _autosave: None,
+            autosave_task: None,
             _subscription: subscription,
         });
         self.persist_session();
@@ -253,35 +264,13 @@ impl Notas {
     // Archivos
     // ---------------------------------------------------------------------
 
-    /// Lee un archivo como texto: quita el BOM y normaliza `\r\n` a `\n`.
-    /// Devuelve `(texto, usaba_crlf, aviso)`.
-    fn read_file(path: &Path) -> std::io::Result<(String, bool, Option<&'static str>)> {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            // Un archivo que no existe se crea al guardar.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e),
-        };
-        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-        let (text, warning) = match String::from_utf8(bytes.to_vec()) {
-            Ok(t) => (t, None),
-            Err(_) => (
-                String::from_utf8_lossy(bytes).into_owned(),
-                Some("El archivo no es UTF-8; algunos caracteres pueden verse mal"),
-            ),
-        };
-        let crlf = text.contains("\r\n");
-        let text = if crlf { text.replace("\r\n", "\n") } else { text };
-        Ok((text, crlf, warning))
-    }
-
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.docs.iter().find(|d| d.path.as_deref() == Some(&path)) {
             let id = doc.id;
             self.activate(id, window, cx);
             return;
         }
-        match Self::read_file(&path) {
+        match notes::read_file(&path) {
             Ok((text, crlf, warning)) => {
                 self.push_doc(Some(path), text, crlf, window, cx);
                 if let Some(w) = warning {
@@ -290,22 +279,12 @@ impl Notas {
                 self.focus_current(window, cx);
                 cx.notify();
             }
-            Err(e) => self.flash(format!("No se pudo abrir {}: {e}", path.display()), window, cx),
+            Err(e) => self.flash(
+                format!("No se pudo abrir {}: {e}", path.display()),
+                window,
+                cx,
+            ),
         }
-    }
-
-    /// Escribe el texto en disco de forma atómica: si algo falla, el original queda intacto.
-    fn write_file(path: &Path, text: &str, crlf: bool) -> std::io::Result<()> {
-        let text = if crlf { text.replace('\n', "\r\n") } else { text.to_string() };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("notas-tmp");
-        std::fs::write(&tmp, text.as_bytes())
-            .and_then(|_| std::fs::rename(&tmp, path))
-            .inspect_err(|_| {
-                let _ = std::fs::remove_file(&tmp);
-            })
     }
 
     /// Guarda una nota si tiene cambios. Una nota nueva recibe un archivo en la
@@ -314,7 +293,7 @@ impl Notas {
     fn save_doc(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let notes_dir = self.settings.notes_dir();
         let doc = &mut self.docs[ix];
-        doc._autosave = None;
+        doc.autosave_task = None;
         if !doc.dirty {
             return true;
         }
@@ -327,7 +306,7 @@ impl Notas {
             }
             None => notes::unique_path(&notes_dir, &notes::display_title(&text, None)),
         };
-        match Self::write_file(&path, &text, doc.crlf) {
+        match notes::write_file(&path, &text, doc.crlf) {
             Ok(()) => {
                 let is_new = doc.path.is_none();
                 let is_settings = path == Settings::path();
@@ -350,7 +329,12 @@ impl Notas {
     }
 
     fn save_all(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        (0..self.docs.len()).fold(true, |ok, ix| self.save_doc(ix, window, cx) && ok)
+        // Sin cortocircuito: si una falla, se intenta guardar el resto igual.
+        let mut ok = true;
+        for ix in 0..self.docs.len() {
+            ok &= self.save_doc(ix, window, cx);
+        }
+        ok
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
@@ -382,7 +366,7 @@ impl Notas {
                 let Some(ix) = this.doc_ix(id) else { return };
                 let doc = &this.docs[ix];
                 let text = doc.editor.read(cx).value().to_string();
-                match Self::write_file(&path, &text, doc.crlf) {
+                match notes::write_file(&path, &text, doc.crlf) {
                     Ok(()) => {
                         let doc = &mut this.docs[ix];
                         doc.path = Some(path);
@@ -405,7 +389,9 @@ impl Notas {
             prompt: None,
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 for path in paths {
                     this.open_path(path, window, cx);
@@ -419,7 +405,11 @@ impl Notas {
         keymap::ensure_keymap_file();
         self.preview = false;
         self.open_path(keymap::keymap_path(), window, cx);
-        self.flash("Los cambios de atajos se aplican al reiniciar la app", window, cx);
+        self.flash(
+            "Los cambios de atajos se aplican al reiniciar la app",
+            window,
+            cx,
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -616,7 +606,7 @@ impl Notas {
         if autosave {
             let id = doc.id;
             // Reemplazar la tarea anterior la cancela: así se espera a que dejes de escribir.
-            doc._autosave = Some(cx.spawn_in(window, async move |this, cx| {
+            doc.autosave_task = Some(cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(delay).await;
                 let _ = this.update_in(cx, |this, window, cx| {
                     if let Some(ix) = this.doc_ix(id) {
@@ -651,12 +641,12 @@ impl Notas {
         let text = text.to_string();
         self.docs[ix].editor.update(cx, |state, cx| {
             let cursor = state.cursor();
-            let delta = text.len() as isize - range.len() as isize;
+            let inserted = text.len();
             state.set_selected_range(range.clone(), cx);
             state.replace(text, window, cx);
             // Devolver el cursor a donde estaba, corrido si la edición quedó antes.
             let cursor = if cursor >= range.end {
-                (cursor as isize + delta).max(0) as usize
+                cursor - range.len() + inserted
             } else {
                 cursor
             };
@@ -679,11 +669,20 @@ impl Notas {
     }
 
     /// Clic en una casilla de la vista previa.
-    fn set_mark(&mut self, mark: Range<usize>, checked: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_mark(
+        &mut self,
+        mark: Range<usize>,
+        checked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.active() else { return };
         // Comprobar que el texto no cambió desde que se dibujó la casilla.
         let current = doc.editor.read(cx).value();
-        if current.get(mark.clone()).is_none_or(|c| c != " " && c != "x" && c != "X") {
+        if current
+            .get(mark.clone())
+            .is_none_or(|c| c != " " && c != "x" && c != "X")
+        {
             return;
         }
         self.apply_edit(mark, if checked { "x" } else { " " }, window, cx);
@@ -784,7 +783,7 @@ impl Notas {
     /// Muestra un mensaje en la barra de estado durante unos segundos.
     fn flash(&mut self, msg: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
         self.status = Some(msg.into());
-        self._status_timer = Some(cx.spawn_in(window, async move |this, cx| {
+        self.status_timer = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(4)).await;
             let _ = this.update(cx, |this, cx| {
                 this.status = None;
@@ -860,31 +859,48 @@ impl Notas {
                     .gap_0p5()
                     .pr_1()
                     .child(
-                        icon_button("search", IconName::Search, "Buscar notas (Ctrl+K)")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        icon_button("search", IconName::Search, "Buscar notas (Ctrl+K)").on_click(
+                            cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.search_notes(&SearchNotes, window, cx)
-                            })),
+                            }),
+                        ),
                     )
                     .child(
                         icon_button(
                             "preview",
-                            if self.preview { IconName::Pencil } else { IconName::Eye },
-                            if self.preview { "Editar (Ctrl+E)" } else { "Vista (Ctrl+E)" },
+                            if self.preview {
+                                IconName::Pencil
+                            } else {
+                                IconName::Eye
+                            },
+                            if self.preview {
+                                "Editar (Ctrl+E)"
+                            } else {
+                                "Vista (Ctrl+E)"
+                            },
                         )
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.toggle_preview(&TogglePreview, window, cx)
-                        })),
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| {
+                                this.toggle_preview(&TogglePreview, window, cx)
+                            },
+                        )),
                     )
                     .child(
                         icon_button(
                             "pin",
-                            if self.settings.always_on_top { IconName::PinOff } else { IconName::Pin },
+                            if self.settings.always_on_top {
+                                IconName::PinOff
+                            } else {
+                                IconName::Pin
+                            },
                             "Siempre encima (Ctrl+Shift+T)",
                         )
                         .selected(self.settings.always_on_top)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.toggle_pin(&TogglePin, window, cx)
-                        })),
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| {
+                                this.toggle_pin(&TogglePin, window, cx)
+                            },
+                        )),
                     )
                     .child(
                         icon_button("settings", IconName::Settings, "Ajustes (Ctrl+,)")
@@ -896,12 +912,18 @@ impl Notas {
                     .child(
                         icon_button(
                             "theme",
-                            if self.settings.dark { IconName::Sun } else { IconName::Moon },
+                            if self.settings.dark {
+                                IconName::Sun
+                            } else {
+                                IconName::Moon
+                            },
                             "Tema claro/oscuro (Ctrl+Shift+D)",
                         )
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.toggle_theme(&ToggleTheme, window, cx)
-                        })),
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| {
+                                this.toggle_theme(&ToggleTheme, window, cx)
+                            },
+                        )),
                     ),
             )
     }
@@ -919,42 +941,45 @@ impl Notas {
                     .child("Nota vacía. Pulsa Ctrl+E para escribir."),
             )
         } else {
-            v_flex().gap_1().children(blocks.iter().enumerate().map(|(i, block)| {
-                match block {
-                    Block::Markdown(md) => div()
-                        .py_1()
-                        .child(TextView::markdown(("md", i), md.clone()).selectable(true))
-                        .into_any_element(),
-                    Block::Task(task) => {
-                        let mark = task.mark.clone();
-                        let entity = entity.clone();
-                        h_flex()
-                            .items_start()
-                            .gap_2()
-                            .pl(px(task.indent as f32 * 8.0))
-                            .child(
-                                div().pt(px(3.)).child(
-                                    Checkbox::new(("task", i))
-                                        .checked(task.checked)
-                                        .on_click(move |checked, window, cx| {
+            v_flex()
+                .gap_1()
+                .children(blocks.iter().enumerate().map(|(i, block)| {
+                    match block {
+                        Block::Markdown(md) => div()
+                            .py_1()
+                            .child(TextView::markdown(("md", i), md.clone()).selectable(true))
+                            .into_any_element(),
+                        Block::Task(task) => {
+                            let mark = task.mark.clone();
+                            let entity = entity.clone();
+                            h_flex()
+                                .items_start()
+                                .gap_2()
+                                .pl(px(task.indent as f32 * 8.0))
+                                .child(div().pt(px(3.)).child(
+                                    Checkbox::new(("task", i)).checked(task.checked).on_click(
+                                        move |checked, window, cx| {
                                             let mark = mark.clone();
                                             let _ = entity.update(cx, |this, cx| {
                                                 this.set_mark(mark, *checked, window, cx)
                                             });
-                                        }),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .when(task.checked, |d| d.text_color(muted).line_through())
-                                    .child(TextView::markdown(("task-text", i), task.text.clone())),
-                            )
-                            .into_any_element()
+                                        },
+                                    ),
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .when(task.checked, |d| d.text_color(muted).line_through())
+                                        .child(TextView::markdown(
+                                            ("task-text", i),
+                                            task.text.clone(),
+                                        )),
+                                )
+                                .into_any_element()
+                        }
                     }
-                }
-            }))
+                }))
         };
 
         div()
@@ -1059,7 +1084,6 @@ impl Notas {
         let palette = self.palette.as_ref()?;
         let weak = cx.entity().downgrade();
         let (q, c, x) = (weak.clone(), weak.clone(), weak.clone());
-        let theme = cx.theme();
 
         let command = palette.render(
             move |query, _, cx| {
@@ -1079,56 +1103,27 @@ impl Notas {
             cx,
         );
 
-        Some(
-            div()
-                .id("palette-backdrop")
-                .absolute()
-                // Debajo de la barra de título, para poder mover o cerrar la ventana.
-                .top(TITLE_BAR_HEIGHT)
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .occlude()
-                .bg(theme.overlay)
-                .flex()
-                .flex_col()
-                .items_center()
-                .pt(px(20.))
-                .px_4()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
-                )
-                .child(
-                    div()
-                        .id("palette")
-                        .w_full()
-                        .max_w(px(460.))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.popover)
-                        .shadow_lg()
-                        .overflow_hidden()
-                        // Los clics dentro del panel no deben cerrarlo.
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        // Escape con la búsqueda vacía cierra; con texto, lo borra la paleta.
-                        .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                            if ev.keystroke.key != "escape" || ev.keystroke.modifiers.modified() {
-                                return;
-                            }
-                            let empty = this
-                                .palette
-                                .as_ref()
-                                .is_none_or(|p| p.state.read(cx).query(cx).is_empty());
-                            if empty {
-                                cx.stop_propagation();
-                                this.close_palette(window, cx);
-                            }
-                        }))
-                        .child(command),
-                ),
-        )
+        Some(Self::render_modal(
+            "palette-backdrop",
+            cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
+            cx,
+            Self::modal_panel("palette", cx)
+                // Escape con la búsqueda vacía cierra; con texto, lo borra la paleta.
+                .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                    if ev.keystroke.key != "escape" || ev.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    let empty = this
+                        .palette
+                        .as_ref()
+                        .is_none_or(|p| p.state.read(cx).query(cx).is_empty());
+                    if empty {
+                        cx.stop_propagation();
+                        this.close_palette(window, cx);
+                    }
+                }))
+                .child(command),
+        ))
     }
 
     fn render_settings(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -1137,47 +1132,62 @@ impl Notas {
         let on_change: OnChange = Rc::new(move |change, window, cx| {
             let _ = weak.update(cx, |this, cx| this.on_settings_change(change, window, cx));
         });
-        let theme = cx.theme();
 
-        Some(
-            div()
-                .id("settings-backdrop")
-                .absolute()
-                .top(TITLE_BAR_HEIGHT)
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .occlude()
-                .bg(theme.overlay)
-                .flex()
-                .flex_col()
-                .items_center()
-                .pt(px(20.))
-                .px_4()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_settings(&CloseSettings, window, cx)),
-                )
-                .child(
-                    div()
-                        .id("settings")
-                        .key_context(keymap::SETTINGS_CONTEXT)
-                        .track_focus(&panel.focus_handle)
-                        .w_full()
-                        .max_w(px(460.))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.popover)
-                        .text_color(theme.popover_foreground)
-                        // El tamaño de letra del editor no se aplica al panel.
-                        .text_size(px(14.))
-                        .shadow_lg()
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(panel.render(&self.settings, on_change, cx)),
-                ),
-        )
+        Some(Self::render_modal(
+            "settings-backdrop",
+            cx.listener(|this, _, window, cx| this.close_settings(&CloseSettings, window, cx)),
+            cx,
+            Self::modal_panel("settings", cx)
+                .key_context(keymap::SETTINGS_CONTEXT)
+                .track_focus(&panel.focus_handle)
+                .text_color(cx.theme().popover_foreground)
+                // El tamaño de letra del editor no se aplica al panel.
+                .text_size(px(14.))
+                .child(panel.render(&self.settings, &on_change, cx)),
+        ))
+    }
+
+    /// Caja de un panel flotante (buscador o ajustes).
+    fn modal_panel(id: &'static str, cx: &App) -> Stateful<Div> {
+        let theme = cx.theme();
+        div()
+            .id(id)
+            .w_full()
+            .max_w(px(460.))
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .shadow_lg()
+            .overflow_hidden()
+            // Los clics dentro del panel no deben cerrarlo.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    }
+
+    /// Fondo oscurecido bajo un panel flotante; un clic fuera del panel llama a `on_close`.
+    fn render_modal(
+        id: &'static str,
+        on_close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+        cx: &App,
+        panel: impl IntoElement,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .absolute()
+            // Debajo de la barra de título, para poder mover o cerrar la ventana.
+            .top(TITLE_BAR_HEIGHT)
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(cx.theme().overlay)
+            .flex()
+            .flex_col()
+            .items_center()
+            .pt(px(20.))
+            .px_4()
+            .on_mouse_down(MouseButton::Left, on_close)
+            .child(panel)
     }
 }
 

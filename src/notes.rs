@@ -88,6 +88,50 @@ pub fn unique_path(dir: &Path, title: &str) -> PathBuf {
     path
 }
 
+/// Lee un archivo como texto: quita el BOM y normaliza `\r\n` a `\n`.
+/// Devuelve `(texto, usaba_crlf, aviso)`.
+pub fn read_file(path: &Path) -> std::io::Result<(String, bool, Option<&'static str>)> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        // Un archivo que no existe se crea al guardar.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let (text, warning) = match String::from_utf8(bytes.to_vec()) {
+        Ok(t) => (t, None),
+        Err(_) => (
+            String::from_utf8_lossy(bytes).into_owned(),
+            Some("El archivo no es UTF-8; algunos caracteres pueden verse mal"),
+        ),
+    };
+    let crlf = text.contains("\r\n");
+    let text = if crlf {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    };
+    Ok((text, crlf, warning))
+}
+
+/// Escribe el texto en disco de forma atómica: si algo falla, el original queda intacto.
+pub fn write_file(path: &Path, text: &str, crlf: bool) -> std::io::Result<()> {
+    let text = if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text.to_string()
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("notas-tmp");
+    std::fs::write(&tmp, text.as_bytes())
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+}
+
 /// Una nota encontrada en disco.
 #[derive(Debug, Clone)]
 pub struct NoteFile {
@@ -134,7 +178,7 @@ pub fn scan(dir: &Path) -> Vec<NoteFile> {
             NoteFile::from_text(path, &text, modified)
         })
         .collect();
-    notes.sort_by(|a, b| b.modified.cmp(&a.modified));
+    notes.sort_by_key(|n| std::cmp::Reverse(n.modified));
     notes
 }
 
@@ -175,14 +219,17 @@ mod tests {
 
     #[test]
     fn titulos() {
-        assert_eq!(title_of("\n\n# Tareas de hoy\n- a").as_deref(), Some("Tareas de hoy"));
-        assert_eq!(title_of("- [ ] Comprar pan").as_deref(), Some("Comprar pan"));
+        assert_eq!(
+            title_of("\n\n# Tareas de hoy\n- a").as_deref(),
+            Some("Tareas de hoy")
+        );
+        assert_eq!(
+            title_of("- [ ] Comprar pan").as_deref(),
+            Some("Comprar pan")
+        );
         assert_eq!(title_of("   \n  "), None);
         assert_eq!(title_of("#"), None);
-        assert_eq!(
-            display_title("", Some(Path::new("C:/n/ideas.md"))),
-            "ideas"
-        );
+        assert_eq!(display_title("", Some(Path::new("C:/n/ideas.md"))), "ideas");
     }
 
     #[test]
@@ -211,6 +258,24 @@ mod tests {
         assert_eq!(a.file_name().unwrap(), "hola.md");
         fs::write(&a, "x").unwrap();
         assert_eq!(unique_path(&dir, "Hola").file_name().unwrap(), "hola-2.md");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lee_y_escribe_respetando_bom_y_crlf() {
+        let dir = std::env::temp_dir().join(format!("notas-test-io-{}", std::process::id()));
+        let path = dir.join("a.md");
+        assert_eq!(read_file(&path).unwrap(), (String::new(), false, None));
+
+        write_file(&path, "uno\ndos\n", true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"uno\r\ndos\r\n");
+        assert_eq!(read_file(&path).unwrap(), ("uno\ndos\n".into(), true, None));
+
+        fs::write(&path, b"\xEF\xBB\xBFhola").unwrap();
+        assert_eq!(read_file(&path).unwrap(), ("hola".into(), false, None));
+
+        fs::write(&path, b"caf\xE9").unwrap();
+        assert!(read_file(&path).unwrap().2.is_some());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
