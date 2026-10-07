@@ -9,6 +9,12 @@
   Hecho en Rust con <a href="https://gpui.rs">GPUI</a> (vía <a href="https://gpui-kit.com">gpui-kit</a>).
 </p>
 
+<p align="center">
+  <img src="assets/screenshots/editor.png" width="32%" alt="Modo edición">
+  <img src="assets/screenshots/vista.png" width="32%" alt="Modo vista con tareas">
+  <img src="assets/screenshots/ajustes.png" width="32%" alt="Panel de ajustes">
+</p>
+
 ## Qué hace
 
 - **Edición** con resaltado de Markdown y **vista** renderizada (`Ctrl+E`) donde las tareas se marcan con un clic.
@@ -17,6 +23,10 @@
 - Autoguardado al dejar de escribir. Las notas se guardan en `Documentos\Notas`.
 - **Ajustes** (`Ctrl+,`): tema, modo claro u oscuro, fuentes, tamaño de letra y "siempre encima". Los cambios se aplican al momento.
 - Cinco temas incluidos (Notas, Bosque, Océano, Sepia y Grafito) y soporte para temas propios.
+
+<p align="center">
+  <img src="assets/screenshots/temas.png" alt="Temas Bosque, Sepia, Océano y Grafito">
+</p>
 
 ## Atajos
 
