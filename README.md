@@ -19,9 +19,11 @@
 
 - **Edición** con resaltado de Markdown y **vista** renderizada (`Ctrl+E`) donde las tareas se marcan con un clic.
 - `Ctrl+L` convierte la línea en tarea o la marca. La barra de estado muestra el progreso.
+- `Ctrl+D` borra la línea y `Alt+↑` / `Alt+↓` la mueven (también varias líneas seleccionadas).
 - Varias notas abiertas y un buscador (`Ctrl+K`) por título y contenido. Si lo que escribes no existe, crea la nota.
 - Autoguardado al dejar de escribir. Las notas se guardan en `Documentos\Notas`.
-- **Ajustes** (`Ctrl+,`): tema, modo claro u oscuro, fuentes, tamaño de letra y "siempre encima". Los cambios se aplican al momento.
+- `Ctrl+Alt+W` borra la nota: el archivo va a la papelera de reciclaje, por si quieres recuperarlo.
+- **Ajustes** (`Ctrl+,`): tema, modo claro u oscuro, fuentes, tamaño de letra, "siempre encima" y atajos. Los cambios se aplican al momento.
 - Cinco temas incluidos (Notas, Bosque, Océano, Sepia y Grafito) y soporte para temas propios.
 
 <p align="center">
@@ -34,12 +36,13 @@
 | --- | --- | --- | --- |
 | `Ctrl+N` | Nueva nota | `Ctrl+E` | Edición / vista |
 | `Ctrl+K` | Buscar notas | `Ctrl+L` | Crear / marcar tarea |
-| `Ctrl+O` | Abrir archivo | `Ctrl+Shift+D` | Claro / oscuro |
-| `Ctrl+S` | Guardar | `Ctrl+Shift+T` | Siempre encima |
-| `Ctrl+W` | Cerrar nota | `Ctrl+=` `Ctrl+-` | Tamaño de letra |
-| `Ctrl+,` | Ajustes | `Ctrl+Shift+K` | Editar atajos |
+| `Ctrl+O` | Abrir archivo | `Ctrl+D` | Borrar línea |
+| `Ctrl+S` | Guardar | `Alt+↑` `Alt+↓` | Mover línea |
+| `Ctrl+W` | Cerrar nota | `Ctrl+T` | Claro / oscuro |
+| `Ctrl+Alt+W` | Borrar nota | `Ctrl+Shift+T` | Siempre encima |
+| `Ctrl+,` | Ajustes | `Ctrl+=` `Ctrl+-` | Tamaño de letra |
 
-Los atajos se cambian en `%APPDATA%\Notas\keymap.json`, por ejemplo `{ "alt-p": "TogglePin", "ctrl-shift-t": null }`.
+Los atajos se cambian en **Ajustes → Atajos**: clic en el atajo de una acción y pulsa la nueva combinación (`Esc` cancela, `Supr` lo quita). También se pueden editar en `%APPDATA%\Notas\keymap.json` (`Ctrl+Shift+K`), por ejemplo `{ "alt-p": "TogglePin", "ctrl-shift-t": null }`; se aplican al guardar.
 
 ## Personalizar
 

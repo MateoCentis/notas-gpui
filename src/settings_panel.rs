@@ -1,15 +1,15 @@
-//! Panel de ajustes (`Ctrl+,`): tema, fuentes, tamaño de letra y opciones.
+//! Panel de ajustes (`Ctrl+,`): tema, fuentes, tamaño de letra, opciones y atajos.
 //! Cada cambio se informa como un [`Change`]; quien abre el panel lo aplica y lo guarda.
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::IndexPath;
+use gpui_kit::base::{IndexPath, Selectable as _};
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -20,7 +20,7 @@ use gpui_kit::component::{
     v_flex,
 };
 
-use crate::{settings::Settings, theme};
+use crate::{keymap, settings::Settings, theme};
 
 type Choices = SearchableVec<SharedString>;
 
@@ -40,6 +40,9 @@ pub enum Change {
     AlwaysOnTop(bool),
     Autosave(bool),
     StartInPreview(bool),
+    /// Empezar (o dejar) de grabar el atajo de una acción.
+    Record(&'static str),
+    ResetShortcuts,
     EditFile,
     OpenThemesFolder,
     Close,
@@ -52,6 +55,10 @@ pub struct SettingsPanel {
     theme: Entity<SelectState<Choices>>,
     editor_font: Entity<SelectState<Choices>>,
     ui_font: Entity<SelectState<Choices>>,
+    /// Acción cuyo atajo se está grabando: la próxima tecla pulsada lo reemplaza.
+    pub recording: Option<&'static str>,
+    /// Escucha las teclas mientras el panel está abierto, para grabar atajos.
+    pub key_recorder: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -135,6 +142,8 @@ impl SettingsPanel {
             theme,
             editor_font,
             ui_font,
+            recording: None,
+            key_recorder: None,
             _subscriptions: subscriptions,
         }
     }
@@ -143,7 +152,7 @@ impl SettingsPanel {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
-        let row = |label: &'static str, hint: Option<&'static str>, control: AnyElement| {
+        let row = |label: &'static str, hint: Option<String>, control: AnyElement| {
             h_flex()
                 .gap_4()
                 .py_2()
@@ -200,7 +209,7 @@ impl SettingsPanel {
                     .ghost()
                     .small()
                     .icon(IconName::Minus)
-                    .tooltip("Ctrl+-")
+                    .tooltip(keymap::label("ZoomOut", cx).unwrap_or_default())
                     .on_click(move |_, window, cx| f(window, cx))
             })
             .child(
@@ -216,12 +225,43 @@ impl SettingsPanel {
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("Ctrl+=")
+                    .tooltip(keymap::label("ZoomIn", cx).unwrap_or_default())
                     .on_click(move |_, window, cx| f(window, cx))
             })
             .into_any_element();
 
+        let shortcut = |action: &'static str| {
+            let recording = self.recording == Some(action);
+            let keys = keymap::keys_for(action, cx);
+            let text = if recording {
+                "Pulsa el atajo…".to_string()
+            } else if keys.is_empty() {
+                "Sin asignar".to_string()
+            } else {
+                keys.iter()
+                    .map(|k| keymap::display(k))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ")
+            };
+            let record = send(Change::Record(action));
+            Button::new(ElementId::Name(format!("key-{action}").into()))
+                .outline()
+                .small()
+                .selected(recording)
+                .label(text)
+                .on_click(move |_, window, cx| record(window, cx))
+                .into_any_element()
+        };
+        let joined = |actions: &[&str]| {
+            let keys: Vec<_> = actions
+                .iter()
+                .filter_map(|a| keymap::label(a, cx))
+                .collect();
+            (!keys.is_empty()).then(|| keys.join(" / "))
+        };
+
         let close = send(Change::Close);
+        let reset_shortcuts = send(Change::ResetShortcuts);
         let edit_file = send(Change::EditFile);
         let open_themes = send(Change::OpenThemesFolder);
 
@@ -256,40 +296,62 @@ impl SettingsPanel {
                     .child(row("Tema", None, dropdown(&self.theme, "Buscar tema…")))
                     .child(row(
                         "Oscuro",
-                        Some("Ctrl+Shift+D"),
+                        keymap::label("ToggleTheme", cx),
                         switch("dark", settings.dark, Change::Dark),
                     ))
                     .child(section("Texto"))
                     .child(row(
                         "Fuente del editor",
-                        Some("Modo edición"),
+                        Some("Modo edición".into()),
                         dropdown(&self.editor_font, "Buscar fuente…"),
                     ))
                     .child(row(
                         "Fuente de la interfaz",
-                        Some("Vista Markdown y menús"),
+                        Some("Vista Markdown y menús".into()),
                         dropdown(&self.ui_font, "Buscar fuente…"),
                     ))
-                    .child(row("Tamaño de letra", Some("Ctrl+= / Ctrl+-"), font_size))
+                    .child(row(
+                        "Tamaño de letra",
+                        joined(&["ZoomIn", "ZoomOut"]),
+                        font_size,
+                    ))
                     .child(section("Comportamiento"))
                     .child(row(
                         "Guardar automáticamente",
-                        Some("Al dejar de escribir"),
+                        Some("Al dejar de escribir".into()),
                         switch("autosave", settings.autosave, Change::Autosave),
                     ))
                     .child(row(
                         "Siempre encima",
-                        Some("Ctrl+Shift+T"),
+                        keymap::label("TogglePin", cx),
                         switch("on-top", settings.always_on_top, Change::AlwaysOnTop),
                     ))
                     .child(row(
                         "Abrir en modo vista",
-                        Some("Al iniciar la app"),
+                        Some("Al iniciar la app".into()),
                         switch(
                             "start-preview",
                             settings.start_in_preview,
                             Change::StartInPreview,
                         ),
+                    ))
+                    .child(section("Atajos"))
+                    .children(
+                        keymap::ACTIONS
+                            .iter()
+                            .map(|&(action, name)| row(name, None, shortcut(action))),
+                    )
+                    .child(row(
+                        "Restablecer atajos",
+                        Some(
+                            "Clic en un atajo para cambiarlo · Esc cancela · Supr lo quita".into(),
+                        ),
+                        Button::new("reset-shortcuts")
+                            .ghost()
+                            .small()
+                            .label("Restablecer")
+                            .on_click(move |_, window, cx| reset_shortcuts(window, cx))
+                            .into_any_element(),
                     )),
             )
             .child(

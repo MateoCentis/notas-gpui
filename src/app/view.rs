@@ -39,8 +39,12 @@ impl Notas {
         };
         let open = self.docs.len();
 
-        let icon_button = |id: &'static str, icon: IconName, tooltip: &'static str| {
-            Button::new(id).ghost().xsmall().icon(icon).tooltip(tooltip)
+        let icon_button = |id: &'static str, icon: IconName, tooltip: &str, action: &str| {
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .icon(icon)
+                .tooltip(keymap::hint(tooltip, action, cx))
         };
 
         TitleBar::new()
@@ -93,11 +97,10 @@ impl Notas {
                     .gap_0p5()
                     .pr_1()
                     .child(
-                        icon_button("search", IconName::Search, "Buscar notas (Ctrl+K)").on_click(
-                            cx.listener(|this, _: &ClickEvent, window, cx| {
+                        icon_button("search", IconName::Search, "Buscar notas", "SearchNotes")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.search_notes(&SearchNotes, window, cx)
-                            }),
-                        ),
+                            })),
                     )
                     .child(
                         icon_button(
@@ -107,11 +110,8 @@ impl Notas {
                             } else {
                                 IconName::Eye
                             },
-                            if self.preview {
-                                "Editar (Ctrl+E)"
-                            } else {
-                                "Vista (Ctrl+E)"
-                            },
+                            if self.preview { "Editar" } else { "Vista" },
+                            "TogglePreview",
                         )
                         .on_click(cx.listener(
                             |this, _: &ClickEvent, window, cx| {
@@ -127,7 +127,8 @@ impl Notas {
                             } else {
                                 IconName::Pin
                             },
-                            "Siempre encima (Ctrl+Shift+T)",
+                            "Siempre encima",
+                            "TogglePin",
                         )
                         .selected(self.settings.always_on_top)
                         .on_click(cx.listener(
@@ -137,7 +138,7 @@ impl Notas {
                         )),
                     )
                     .child(
-                        icon_button("settings", IconName::Settings, "Ajustes (Ctrl+,)")
+                        icon_button("settings", IconName::Settings, "Ajustes", "OpenSettings")
                             .selected(self.settings_panel.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_settings(&OpenSettings, window, cx)
@@ -151,7 +152,8 @@ impl Notas {
                             } else {
                                 IconName::Moon
                             },
-                            "Tema claro/oscuro (Ctrl+Shift+D)",
+                            "Tema claro/oscuro",
+                            "ToggleTheme",
                         )
                         .on_click(cx.listener(
                             |this, _: &ClickEvent, window, cx| {
@@ -228,24 +230,27 @@ impl Notas {
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let hint = |keys: &'static str, text: &'static str| {
-            h_flex()
-                .gap_3()
-                .items_center()
-                .child(
-                    div()
-                        .w(px(64.))
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.secondary)
-                        .text_xs()
-                        .text_center()
-                        .child(keys),
-                )
-                .child(div().text_color(muted).child(text))
+        let hint = |action: &str, text: &'static str| {
+            let keys = keymap::label(action, cx)?;
+            Some(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .min_w(px(64.))
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.secondary)
+                            .text_xs()
+                            .text_center()
+                            .child(keys),
+                    )
+                    .child(div().text_color(muted).child(text)),
+            )
         };
         v_flex()
             .size_full()
@@ -258,8 +263,8 @@ impl Notas {
                 v_flex()
                     .gap_2()
                     .text_sm()
-                    .child(hint("Ctrl N", "Nueva nota"))
-                    .child(hint("Ctrl K", "Buscar notas")),
+                    .children(hint("NewFile", "Nueva nota"))
+                    .children(hint("SearchNotes", "Buscar notas")),
             )
     }
 
@@ -472,6 +477,10 @@ impl Render for Notas {
             .on_action(cx.listener(Self::toggle_pin))
             .on_action(cx.listener(Self::toggle_maximize))
             .on_action(cx.listener(Self::toggle_task))
+            .on_action(cx.listener(Self::delete_line))
+            .on_action(cx.listener(Self::move_line_up))
+            .on_action(cx.listener(Self::move_line_down))
+            .on_action(cx.listener(Self::delete_note))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))

@@ -6,8 +6,8 @@ use gpui::{AppContext as _, Context, EntityId, PathPromptOptions, Window};
 use gpui_kit::component::input::{EditorState, InputEvent};
 
 use crate::{
-    keymap::{self, CloseNote, NewFile, OpenFile, OpenKeymap, Save, SaveAs},
-    notes,
+    keymap::{self, CloseNote, DeleteNote, NewFile, OpenFile, OpenKeymap, Save, SaveAs},
+    notes, platform,
     settings::Settings,
     tasks,
 };
@@ -43,7 +43,7 @@ impl Notas {
                 .language("markdown")
                 .line_number(false)
                 .folding(false)
-                .placeholder("Escribe algo…  (Ctrl+L crea una tarea, Ctrl+K busca notas)")
+                .placeholder(placeholder(cx))
         });
         editor.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
         let subscription = cx.subscribe_in(
@@ -126,6 +126,30 @@ impl Notas {
         cx.notify();
     }
 
+    /// Borra la nota activa: el archivo va a la papelera y la nota se cierra.
+    pub(super) fn delete_note(
+        &mut self,
+        _: &DeleteNote,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.docs.pop() else { return };
+        if let Some(path) = &doc.path
+            && let Err(e) = platform::move_to_trash(path)
+        {
+            self.docs.push(doc);
+            self.flash(format!("No se pudo borrar la nota: {e}"), window, cx);
+            return;
+        }
+        let msg = match doc.path {
+            Some(_) => format!("«{}» se movió a la papelera", doc.title),
+            None => "Nota descartada".to_string(),
+        };
+        self.persist_session();
+        self.focus_current(window, cx);
+        self.flash(msg, window, cx);
+    }
+
     /// Guarda las notas abiertas en los ajustes, para restaurarlas al reabrir.
     pub(super) fn persist_session(&mut self) {
         self.settings.open_notes = self.docs.iter().filter_map(|d| d.path.clone()).collect();
@@ -183,6 +207,7 @@ impl Notas {
             Ok(()) => {
                 let is_new = doc.path.is_none();
                 let is_settings = path == Settings::path();
+                let is_keymap = path == keymap::keymap_path();
                 doc.path = Some(path);
                 doc.dirty = false;
                 if is_new {
@@ -190,6 +215,15 @@ impl Notas {
                 }
                 if is_settings {
                     self.reload_settings(window, cx);
+                }
+                if is_keymap {
+                    let errors = keymap::load(cx);
+                    let msg = if errors.is_empty() {
+                        "Atajos aplicados".to_string()
+                    } else {
+                        errors.join(" · ")
+                    };
+                    self.flash(msg, window, cx);
                 }
                 cx.notify();
                 true
@@ -283,10 +317,21 @@ impl Notas {
         keymap::ensure_keymap_file();
         self.preview = false;
         self.open_path(keymap::keymap_path(), window, cx);
-        self.flash(
-            "Los cambios de atajos se aplican al reiniciar la app",
-            window,
-            cx,
-        );
+        self.flash("Los cambios se aplican al guardar el archivo", window, cx);
     }
+}
+
+/// Texto de una nota vacía, con los atajos actuales.
+fn placeholder(cx: &gpui::App) -> String {
+    let mut tips = Vec::new();
+    if let Some(keys) = keymap::label("ToggleTask", cx) {
+        tips.push(format!("{keys} crea una tarea"));
+    }
+    if let Some(keys) = keymap::label("SearchNotes", cx) {
+        tips.push(format!("{keys} busca notas"));
+    }
+    if tips.is_empty() {
+        return "Escribe algo…".into();
+    }
+    format!("Escribe algo…  ({})", tips.join(", "))
 }

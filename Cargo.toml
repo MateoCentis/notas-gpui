@@ -1,6 +1,6 @@
 [package]
 name = "notas"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Bloc de notas minimalista con Markdown y listas de tareas"
 
@@ -16,6 +16,7 @@ dirs = "6"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

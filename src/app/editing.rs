@@ -1,11 +1,12 @@
-//! Edición del texto y tareas: autoguardado, vista previa y casillas.
+//! Edición del texto, líneas y tareas: autoguardado, vista previa y casillas.
 
 use std::{ops::Range, rc::Rc, time::Duration};
 
 use gpui::{Context, Window};
 
 use crate::{
-    keymap::ToggleTask,
+    keymap::{DeleteLine, MoveLineDown, MoveLineUp, ToggleTask},
+    lines::{self, LineEdit},
     notes,
     tasks::{self, Block},
 };
@@ -77,6 +78,62 @@ impl Notas {
             state.set_selected_range(cursor..cursor, cx);
         });
         self.on_text_changed(ix, window, cx);
+    }
+
+    /// Aplica una edición de líneas a la nota activa y deja la selección que indica.
+    fn apply_line_edit(
+        &mut self,
+        edit: impl FnOnce(&str, Range<usize>) -> Option<LineEdit>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preview {
+            return;
+        }
+        let Some(ix) = self.docs.len().checked_sub(1) else {
+            return;
+        };
+        let changed = self.docs[ix].editor.update(cx, |state, cx| {
+            let text = state.value();
+            let sel = state.selected_range();
+            let Some(edit) = edit(&text, sel.start.min(sel.end)..sel.start.max(sel.end)) else {
+                return false;
+            };
+            state.set_selected_range(edit.range, cx);
+            state.replace(edit.text, window, cx);
+            state.set_selected_range(edit.selection, cx);
+            true
+        });
+        if changed {
+            self.on_text_changed(ix, window, cx);
+        }
+    }
+
+    pub(super) fn delete_line(
+        &mut self,
+        _: &DeleteLine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_line_edit(|text, sel| Some(lines::delete_lines(text, sel)), window, cx);
+    }
+
+    pub(super) fn move_line_up(
+        &mut self,
+        _: &MoveLineUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_line_edit(|text, sel| lines::move_lines(text, sel, true), window, cx);
+    }
+
+    pub(super) fn move_line_down(
+        &mut self,
+        _: &MoveLineDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_line_edit(|text, sel| lines::move_lines(text, sel, false), window, cx);
     }
 
     pub(super) fn toggle_task(

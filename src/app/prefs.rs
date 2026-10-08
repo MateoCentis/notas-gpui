@@ -1,9 +1,9 @@
-//! Panel de ajustes (`Ctrl+,`), apariencia y recarga de `settings.json`.
+//! Panel de ajustes (`Ctrl+,`), apariencia, atajos y recarga de `settings.json`.
 
-use gpui::{App, Context, Window};
+use gpui::{App, Context, Keystroke, Window};
 
 use crate::{
-    keymap::{CloseSettings, OpenSettings, TogglePin},
+    keymap::{self, CloseSettings, OpenSettings, TogglePin},
     platform,
     settings::Settings,
     settings_panel::{Change, SettingsPanel},
@@ -29,12 +29,18 @@ impl Notas {
         if !errors.is_empty() {
             self.flash(errors.join(" · "), window, cx);
         }
-        self.settings_panel = Some(SettingsPanel::new(
-            &self.settings,
-            Self::on_settings_change,
-            window,
-            cx,
-        ));
+        let mut panel = SettingsPanel::new(&self.settings, Self::on_settings_change, window, cx);
+        // Los interceptores ven la tecla antes que los atajos: así se puede grabar
+        // cualquier combinación, incluso una que ya esté asignada.
+        let weak = cx.entity().downgrade();
+        panel.key_recorder = Some(cx.intercept_keystrokes(move |ev, window, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                if this.record_shortcut(&ev.keystroke, window, cx) {
+                    cx.stop_propagation();
+                }
+            });
+        }));
+        self.settings_panel = Some(panel);
         cx.notify();
     }
 
@@ -80,6 +86,20 @@ impl Notas {
             }
             Change::Autosave(on) => self.settings.autosave = on,
             Change::StartInPreview(on) => self.settings.start_in_preview = on,
+            Change::Record(action) => {
+                if let Some(panel) = self.settings_panel.as_mut() {
+                    panel.recording = (panel.recording != Some(action)).then_some(action);
+                }
+            }
+            Change::ResetShortcuts => {
+                let errors = keymap::reset(cx);
+                let msg = if errors.is_empty() {
+                    "Atajos restablecidos".to_string()
+                } else {
+                    errors.join(" · ")
+                };
+                self.flash(msg, window, cx);
+            }
             Change::EditFile => {
                 self.settings_panel = None;
                 self.settings.save();
@@ -96,6 +116,47 @@ impl Notas {
         }
         self.settings.save();
         cx.notify();
+    }
+
+    /// Si se está grabando un atajo, `keystroke` lo reemplaza. Devuelve `true` si la
+    /// tecla se usó y no debe llegar a nadie más.
+    fn record_shortcut(
+        &mut self,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(action) = self.settings_panel.as_ref().and_then(|p| p.recording) else {
+            return false;
+        };
+        let key = keystroke.key.as_str();
+        let m = keystroke.modifiers;
+        // Esperar a la tecla que acompaña a los modificadores.
+        if matches!(key, "control" | "alt" | "shift" | "platform" | "function") {
+            return true;
+        }
+        let plain = !m.control && !m.alt && !m.platform;
+        let function_key = key.len() > 1 && key.starts_with('f') && key[1..].parse::<u8>().is_ok();
+        let result = match key {
+            "escape" if !m.modified() => Ok(None),
+            "delete" | "backspace" if !m.modified() => keymap::set_shortcut(action, None, cx),
+            // Sin Ctrl ni Alt, una letra escribiría texto en vez de ejecutar el atajo.
+            _ if plain && !function_key => {
+                self.flash("Usa una combinación con Ctrl o Alt", window, cx);
+                return true;
+            }
+            _ => keymap::set_shortcut(action, Some(&keystroke.unparse()), cx),
+        };
+        if let Some(panel) = self.settings_panel.as_mut() {
+            panel.recording = None;
+        }
+        match result {
+            Ok(Some(notice)) => self.flash(notice, window, cx),
+            Ok(None) => {}
+            Err(e) => self.flash(e, window, cx),
+        }
+        cx.notify();
+        true
     }
 
     /// Aplica tema y fuentes de los ajustes actuales; avisa de lo que no se pudo aplicar.

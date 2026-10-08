@@ -6,6 +6,7 @@ extern crate gpui_kit as gpui;
 
 mod app;
 mod keymap;
+mod lines;
 mod notes;
 mod palette;
 mod platform;
